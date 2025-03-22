@@ -1,0 +1,15 @@
+[package]
+name = "violet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.97"
+bytemuck = "1.22.0"
+cfg-if = "1.0.0"
+cgmath = "0.18.0"
+env_logger = "0.11.7"
+image = "0.25.5"
+log = "0.4.26"
+wgpu = "24.0.1"
+winit = { version = "0.29", features = ["rwh_05"] }
