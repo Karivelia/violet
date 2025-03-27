@@ -1,12 +1,13 @@
-use std::{any, collections::HashMap, fs};
+use std::{any, collections::HashMap, fmt::Debug, fs};
 
-use bytemuck::Pod;
+use bytemuck::{Pod, Zeroable};
 use cgmath::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use wgpu::{util::DeviceExt, BufferUsages, ShaderModule};
 mod pipeline;
 mod texture;
+use pollster;
 // lib.rs
 mod camera;
 #[rustfmt::skip]
@@ -18,19 +19,20 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
 );
 
 #[repr(C)]
+#[derive(Pod, Zeroable, Clone, Copy, Debug)]
 pub struct Color {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
+    color: [f32;4]
 }
 
 #[repr(C)]
+#[derive(Clone, Debug, Copy)]
 pub struct Vertex {
     pos: cgmath::Vector2<f32>,
     z_index: f32,
     color: Color,
 }
+unsafe impl Pod for Vertex {}
+unsafe impl Zeroable for Vertex {}
 
 #[repr(C)]
 pub struct Stroke {
@@ -59,10 +61,13 @@ impl Vertex {
                     offset: mem::size_of::<cgmath::Vector2<f32>>() as wgpu::BufferAddress
                         + mem::size_of::<f32>() as wgpu::BufferAddress,
                     shader_location: 2,
-                    format: wgpu::VertexFormat::Uint32x4, // NEW!
+                    format: wgpu::VertexFormat::Float32x4, // NEW!
                 },
             ],
         }
+    }
+    pub fn new(pos: (f32, f32), layer: i32, )-> Self{
+        Self { pos: pos.into(), z_index: layer as  f32, color: Color { color: [0.5, 0.5, 1.0, 1.0] } }
     }
 }
 
@@ -230,6 +235,8 @@ struct State<'a> {
     camera_bind_group: wgpu::BindGroup,
     camera_controller: CameraController,
     pipelines: HashMap<String, wgpu::RenderPipeline>,
+    vertices: u32,
+    lines: Vec<Vertex>,
 }
 
 impl<'a> State<'a> {
@@ -320,9 +327,9 @@ impl<'a> State<'a> {
         }
 
         surface.configure(&device, &config); // NEW!
-        let diffuse_bytes = include_bytes!("happy-tree.png"); // CHANGED!
+        let diffuse_bytes = include_bytes!("happy-tree.jpeg"); // CHANGED!
         let diffuse_texture =
-            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap(); // CHANGED!
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.jpeg").unwrap(); // CHANGED!
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -362,6 +369,8 @@ impl<'a> State<'a> {
             ],
             label: Some("diffuse_bind_group"),
         });
+
+        let lines: Vec<Vertex> = vec![Vertex::new((1.0,0.1), 1), Vertex::new((0.5,0.1), 1), Vertex::new((0.2,0.1), 1), Vertex::new((0.6,0.1), 1)];
 
         let camera = Camera {
             // position the camera 1 unit up and 2 units back
@@ -409,10 +418,10 @@ impl<'a> State<'a> {
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: &[],
+            contents: bytemuck::cast_slice(&lines),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let shaders = Self::include_shaders("../shaders/", &device).unwrap();
+        let shaders = Self::include_shaders("shaders/", &device).unwrap();
 
         let pipeline = pipeline::builder(
             pipeline::PipelineType::Line,
@@ -432,7 +441,7 @@ impl<'a> State<'a> {
             });
 
         // new()
-
+        let vertices = 0;
         Self {
             window,
             surface,
@@ -451,6 +460,8 @@ impl<'a> State<'a> {
             camera_buffer,
             camera_bind_group,
             camera_controller,
+            vertices: vertices,
+            lines: lines,
         }
     }
 
@@ -471,20 +482,27 @@ impl<'a> State<'a> {
         device: &wgpu::Device,
     ) -> anyhow::Result<HashMap<String, ShaderModule>, anyhow::Error> {
         let mut modules = HashMap::new();
+
         let _ = fs::read_dir(path)?.try_for_each(|file| {
+
             let file = file?;
             let file_path = file.path();
             let name = file.file_name();
             let name: &str = name.to_str().ok_or(std::fmt::Error)?;
 
+            println!("Name of file trying to load is: {:?}", file_path);
+
             if file_path.extension().and_then(|ext| ext.to_str()) == Some("wgsl") {
-                let source = fs::read_to_string(&path).unwrap();
+
+                let source = fs::read_to_string(&file_path).unwrap();
 
                 let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some(file_path.to_str().unwrap()),
+                    label: Some(name),
                     source: wgpu::ShaderSource::Wgsl(source.into()),
                 });
+
                 log::info!("included shader: {:?}", file_path);
+
                 modules.insert(name.to_owned(), shader_module);
             }
             // device.create_shader_module();
@@ -542,12 +560,12 @@ impl<'a> State<'a> {
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
 
             render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
-            render_pass.set_index_buffer(self.index_buffer.as_ref().unwrap().slice(..), wgpu::IndexFormat::Uint16);
+            // render_pass.set_index_buffer(self.index_buffer.as_ref().unwrap().slice(..), wgpu::IndexFormat::Uint16);
 
-            render_pass.set_vertex_buffer(1, self.instance_buffer.as_ref().unwrap().slice(..));
-            render_pass.set_index_buffer(self.index_buffer.as_ref().unwrap().slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.set_vertex_buffer(1, self.vertex_buffer.as_ref().unwrap().slice(..));
+            // render_pass.set_index_buffer(self.index_buffer.as_ref().unwrap().slice(..), wgpu::IndexFormat::Uint16);
 
-            render_pass.draw(0..3,0..1);
+            render_pass.draw(0..self.lines.len() as u32,0..1);
             // render_pass.set_pipeline(&self.render_pipeline); // 2.
             // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -655,9 +673,11 @@ pub async fn run() {
 
 
 mod test{
+    use winit::event_loop::EventLoopBuilder;
 
+    use super::*;
     #[test]
     fn test_one(){
-        
+        pollster::block_on(run());
     }
 }

@@ -18,6 +18,6 @@ fn vertex_main(input: VertexInput)->VertexOutput{
 }
 
 @fragment
-fn fragment_main(@location(0) color: vec4<u32>) -> @location(0) vec4<f32> {
+fn fragment_main(@location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(vec3<f32>(color.rgb) / 255.0, 1.0);
 }
